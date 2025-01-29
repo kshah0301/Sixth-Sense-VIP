@@ -6,11 +6,16 @@ import argparse
 import itertools
 from collections import Counter
 from collections import deque
-
+from time import sleep
 import cv2 as cv
-import easyocr 
+from paddleocr import PaddleOCR
 import numpy as np
 import mediapipe as mp
+from PIL import ImageGrab
+
+import tempfile
+import subprocess
+import os
 
 from utils import CvFpsCalc
 from model import KeyPointClassifier
@@ -18,8 +23,8 @@ from model import PointHistoryClassifier
 
 
 def get_args():
-    parser = argparse.ArgumentParser()
 
+    parser = argparse.ArgumentParser()
     parser.add_argument("--device", type=int, default=0)
     parser.add_argument("--width", help='cap width', type=int, default=1080)
     parser.add_argument("--height", help='cap height', type=int, default=720)
@@ -71,12 +76,24 @@ def main():
 
     point_history_classifier = PointHistoryClassifier()
 
+    # Initialize PaddleOCR model
+    det_model_dir = "/Users/karan/Desktop/20_gestures_vip/en_PP-OCRv3_det_distill_train"
+    rec_model_dir = "/Users/karan/Desktop/20_gestures_vip/en_PP-OCRv4_rec_train"
 
-    # Initialize EasyOCR reader
-    reader = easyocr.Reader(['en'], gpu=True)  
-    ocr_active = False
-    frame_skip_count = 0
-    skip_rate = 1 # Run OCR every 5th frame
+    ocr = PaddleOCR(
+        use_angle_cls=True,
+        lang='en',
+        det_model_dir=det_model_dir,
+        rec_model_dir=rec_model_dir
+    )
+
+    # Flags for OCR Modes ###########################################################
+    frame_mode = False
+    read_line_mode = False
+    bounding_box = None  
+    line_start_y = None 
+    bounding_box_mode = False 
+    ocr_memory = set()  
 
     # Read labels ###########################################################
     with open('model/keypoint_classifier/20_keypoint_classifier_label.csv',
@@ -130,11 +147,6 @@ def main():
         image.flags.writeable = True
 
         #  ####################################################################
-
-        # include the OCR processing in the main loop
-        # one step is detection wherethe hand is detected and the bounding box is calculated
-        # other solution is L gesture detection where OCR is triggered and hand can be removed from the fram, once thumbs down gesture is detected ocr is deactivated
-        
         if results.multi_hand_landmarks is not None:
             for hand_landmarks, handedness in zip(results.multi_hand_landmarks,
                                                   results.multi_handedness):
@@ -159,29 +171,27 @@ def main():
                 else:
                     point_history.append([0, 0])
 
-                # Trigger OCR on "L gesture" detection 
-                if hand_sign_id == 9:
-                    print("L gesture detected - Triggering OCR")
-                    ocr_active = True
-                '''
-                    print("L gesture detected - Triggering OCR")
-                    scale_percent = 100  
-                    width = int(image.shape[1] * scale_percent / 100)
-                    height = int(image.shape[0] * scale_percent / 100)
-                    resized_image = cv.resize(image, (width, height), interpolation=cv.INTER_AREA)
-                    ocr_result = reader.readtext(resized_image)
-                    # Display OCR results
-                    for (bbox, text, confidence) in ocr_result:
-                        top_left = tuple([int(val) for val in bbox[0]])
-                        bottom_right = tuple([int(val) for val in bbox[2]])
-                        cv.rectangle(debug_image, top_left, bottom_right, (0, 255, 0), 2)
-                        cv.putText(debug_image, text, (top_left[0], top_left[1] - 10),
-                                    cv.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2, cv.LINE_AA)
-                '''
-                # gesture is thumbs down
-                if hand_sign_id == 6: 
-                    print("Thumbs-down gesture detected - Disabling OCR")
-                    ocr_active = False
+                # "L" gesture for read line mode
+                if hand_sign_id == 9:  
+                    print("L gesture detected")
+                    frame_mode = False
+                    read_line_mode = True
+                    text_to_speech(" Read Line Mode Activated")
+                    print(f"Read Line Mode Activated")
+                 
+                # Palm gesture for screen capture
+                if hand_sign_id == 10:  
+                    frame_mode = True
+                    read_line_mode = False
+                    text_to_speech("Screen Capture Mode Activated")
+                    print(f"Screen capture mode activated")
+
+                # Thumbs down to disable modes          
+                if hand_sign_id == 6:  
+                    read_line_mode = False
+                    frame_mode = False
+                    print("Modes Disabled")
+
                 
                 # Finger gesture classification
                 finger_gesture_id = 0
@@ -208,27 +218,66 @@ def main():
         else:
             point_history.append([0, 0])
 
-
-        if ocr_active:
-            # Only run OCR on every nth frame
-            if frame_skip_count % skip_rate == 0:
-                # Run OCR on the current frame
-                scale_percent = 100  
-                width = int(image.shape[1] * scale_percent / 100)
-                height = int(image.shape[0] * scale_percent / 100)
-                resized_image = cv.resize(image, (width, height), interpolation=cv.INTER_AREA)
-                ocr_result = reader.readtext(resized_image)
-
-                # Display OCR results
-                for (bbox, text, confidence) in ocr_result:
-                    top_left = tuple([int(val) for val in bbox[0]])
-                    bottom_right = tuple([int(val) for val in bbox[2]])
+        # OCR For Capture Frame Mode
+        if frame_mode:
+            # Perform OCR on the entire frame
+            ocr_results = ocr.ocr(debug_image)
+            if ocr_results and len(ocr_results) > 0 and ocr_results[0]:
+                batch_text = []  # Store all detected text in the frame
+                for res in ocr_results[0]:
+                    box, text, confidence = res[0], res[1][0], res[1][1]
+                    # Rescale box coordinates to the original frame
+                    top_left = tuple(map(int, box[0]))
+                    bottom_right = tuple(map(int, box[2]))
+                    # Draw bounding box and text on the frame
                     cv.rectangle(debug_image, top_left, bottom_right, (0, 255, 0), 2)
                     cv.putText(debug_image, text, (top_left[0], top_left[1] - 10),
                             cv.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2, cv.LINE_AA)
+                    batch_text.append(text)  # Add detected text to batch
+                # Combine all detected text into a single string and send to TTS
+                combined_text = " ".join(batch_text)
+                print(f"Batch OCR Detected: {combined_text}")
+                text_to_speech(combined_text)
+            else:
+                print("No text detected in the frame.")
+        
+        # OCR For Read Line Mode
+        if read_line_mode:
+            if results.multi_hand_landmarks:
+                for hand_landmarks in results.multi_hand_landmarks:
+                    # Get fingertip coordinates for the index finger
+                    index_tip_y = int(hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP].y * debug_image.shape[0])
+                    # Region above the index fingertip to crop for OCR
+                    crop_height = 100  # height of the cropped area 
+                    crop_width = debug_image.shape[1]  
+                    x1, y1 = 0, max(0, index_tip_y - crop_height)
+                    x2, y2 = crop_width, index_tip_y
+                    roi = debug_image[y1:y2, x1:x2]
+                    if roi.size > 0:  
+                        try:
+                            # Perform OCR on the cropped region
+                            ocr_results = ocr.ocr(roi)
+                            if ocr_results and ocr_results[0]:
+                                for res in ocr_results[0]:
+                                    box, text, confidence = res[0], res[1][0], res[1][1]
+                                    # Rescale box to original coordinates
+                                    top_left = (int(box[0][0]), y1 + int(box[0][1]))
+                                    bottom_right = (int(box[2][0]), y1 + int(box[2][1]))
+                                    # Draw the bounding box and text
+                                    cv.rectangle(debug_image, top_left, bottom_right, (0, 255, 0), 2)
+                                    cv.putText(debug_image, text, (top_left[0], top_left[1] - 10),  # Position above the word
+                                            cv.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2, cv.LINE_AA)
+                                    # Log the detected text and confidence
+                                    text_to_speech(text)
+                                    print(f"Detected: {text} (Confidence: {confidence:.2f})")
+                        except Exception as e:
+                            print(f"Error during OCR: {e}")
 
-            # Increment the frame skip counter
-            frame_skip_count += 1
+        # Display debug information
+        debug_image = draw_info(debug_image, fps, int(bounding_box_mode), int(read_line_mode))
+        cv.imshow('OCR with Gestures', debug_image)
+
+        # Display #################################################################
 
 
         debug_image = draw_point_history(debug_image, point_history)
@@ -240,6 +289,35 @@ def main():
     cap.release()
     cv.destroyAllWindows()
 
+
+# Text-to-speech function
+def text_to_speech(text, voice="en_US/ljspeech_low"):
+    # Create a temporary file to store audio 
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_audio:
+        output_file = temp_audio.name
+    # Define Mimic 3 command
+    mimic3_cmd = [
+        "mimic3",    # Mimic 3 command
+        "--voice", voice,  # Specify the voice
+        "--stdout",      # Output audio to stdout
+        text             # Input text
+    ]
+    try:
+        # Generate TTS audio and save it to a temporary file
+        with open(output_file, "wb") as audio_file:
+            subprocess.run(mimic3_cmd, stdout=audio_file, check=True)
+        # Play the audio using an appropriate command for your OS
+        if os.name == "posix":  # macOS or Linux
+            os.system(f"afplay {output_file}")
+        elif os.name == "nt":  # Windows
+            os.system(f"start {output_file}")
+    except FileNotFoundError:
+        print("Mimic 3 is not installed or not found in PATH.")
+    except subprocess.CalledProcessError as e:
+        print(f"Error generating speech: {e}")
+    finally:
+        if os.path.exists(output_file):
+            os.remove(output_file)
 
 def select_mode(key, mode):
     number = -1
@@ -559,16 +637,16 @@ def draw_info_text(image, brect, handedness, hand_sign_text,
 
     info_text = handedness.classification[0].label[0:]
     if hand_sign_text != "":
-        info_text = info_text + ':' + hand_sign_text
-    cv.putText(image, info_text, (brect[0] + 5, brect[1] - 4),
-               cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv.LINE_AA)
+         info_text = info_text + ':' + hand_sign_text
+    #cv.putText(image, info_text, (brect[0] + 5, brect[1] - 4),
+    #           cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv.LINE_AA)
 
-    if finger_gesture_text != "":
-        cv.putText(image, "Finger Gesture:" + finger_gesture_text, (10, 60),
-                   cv.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 4, cv.LINE_AA)
-        cv.putText(image, "Finger Gesture:" + finger_gesture_text, (10, 60),
-                   cv.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2,
-                   cv.LINE_AA)
+    #if finger_gesture_text != "":
+    #    cv.putText(image, "Finger Gesture:" + finger_gesture_text, (10, 60),
+    #               cv.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 4, cv.LINE_AA)
+    #    cv.putText(image, "Finger Gesture:" + finger_gesture_text, (10, 60),
+    #               cv.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2,
+    #               cv.LINE_AA)
 
     return image
 
@@ -581,7 +659,6 @@ def draw_point_history(image, point_history):
 
     return image
 
-
 def draw_info(image, fps, mode, number):
     cv.putText(image, "FPS:" + str(fps), (10, 30), cv.FONT_HERSHEY_SIMPLEX,
                1.0, (0, 0, 0), 4, cv.LINE_AA)
@@ -591,12 +668,12 @@ def draw_info(image, fps, mode, number):
     mode_string = ['Logging Key Point', 'Logging Point History']
     if 1 <= mode <= 2:
         cv.putText(image, "MODE:" + mode_string[mode - 1], (10, 90),
-                   cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1,
-                   cv.LINE_AA)
+                  cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1,
+                  cv.LINE_AA)
         if 0 <= number <= 9:
-            cv.putText(image, "NUM:" + str(number), (10, 110),
-                       cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1,
-                       cv.LINE_AA)
+           cv.putText(image, "NUM:" + str(number), (10, 110),
+                      cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1,
+                      cv.LINE_AA)
     return image
 
 
