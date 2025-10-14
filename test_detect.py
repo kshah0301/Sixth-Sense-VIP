@@ -17,9 +17,13 @@ import soundfile as sf
 from instrumental_beeping import AudioThread
 from test_stt import WhisperTranscriber
 from mimic import text_to_speech_offline
+from directional_audio_generator import generate_directional_audio_files
 
 class GestureYoloOcr:
     def __init__(self):
+        # Generate directional audio files if they don't exist
+        generate_directional_audio_files()
+        
         # Mediapipe gesture setup
         self.latest_gesture_result = None
         model_path = "hand_landmarker.task"
@@ -70,10 +74,12 @@ class GestureYoloOcr:
         self.running = False
 
         # Instrument sampler
+    """
         from instrumental_beeping import InstrumentSampler
         self.sampler = InstrumentSampler()
         print("Loaded:", self.sampler.preloaded_samples.keys())
-        self.sampler.play_instrument_sample("A5", amplitude=1.0, pan=0.0, duration=1)
+        self.sampler.play_directional_sample()
+    """
 
     def calc_landmark_list(self, image, landmarks):
         image_width, image_height = image.shape[1], image.shape[0]
@@ -124,6 +130,45 @@ class GestureYoloOcr:
         x_center, y_center = center
         x_min_yolo, y_min_yolo, x_max_yolo, y_max_yolo = yolo_box
         return (x_center >= x_min_yolo) and (x_center <= x_max_yolo) and (y_center >= y_min_yolo) and (y_center <= y_max_yolo)
+    
+    def fetch_off_candidates(query_text: str, limit: int = 15):
+    # OFF search API: return products with front image urls
+        url = "https://world.openfoodfacts.org/cgi/search.pl"
+        params = {
+            "search_simple": 1, "action": "process", "json": 1,
+            "page_size": limit, "search_terms": query_text
+        }
+        r = requests.get(url, params=params, timeout=10)
+        r.raise_for_status()
+        products = r.json().get("products", [])
+        # Prefer front image
+        candidates = []
+        for p in products:
+            img = p.get("image_front_url") or p.get("image_url")
+            name = p.get("product_name") or p.get("brands") or "unknown"
+            if img:
+                candidates.append((img, name))
+        return candidates
+
+    def download_image_to_tensor(url: str, preprocess):
+        try:
+            r = requests.get(url, timeout=10)
+            r.raise_for_status()
+            image = Image.open(io.BytesIO(r.content)).convert("RGB")
+            return preprocess(image)
+        except Exception:
+            return None
+
+    def clip_image_similarity(crop_bgr: np.ndarray, candidates, model, preprocess, device):
+        # Convert crop to PIL and preprocess
+        crop_rgb = cv.cvtColor(crop_bgr, cv.COLOR_BGR2RGB)
+        crop_pil = Image.fromarray(crop_rgb)
+        crop_tensor = preprocess(crop_pil).unsqueeze(0).to(device)
+
+        # Encode query crop
+        with torch.no_grad():
+            q = model.encode_image(crop_tensor)
+            q = q / q.norm(dim=-1, keepdim=True)
 
     def run(self):
         self._running = True
@@ -163,6 +208,8 @@ class GestureYoloOcr:
                 class_names = results[0].names
                 store_product_boxes = [yolo_boxes_all[idx] for idx, cls_idx in enumerate(yolo_cls) if class_names[int(cls_idx)] == "items"]
                 store_product_boxes = np.array(store_product_boxes)
+
+                
 
                 start_ocr = time.time()
                 ocr_result = self.ocr.ocr(frame, cls=False, det=True)
@@ -257,7 +304,7 @@ class GestureYoloOcr:
                         half_width = bbox_width / 2.0
                         effective_distance = min_distance - half_width
                         direction = index_finger_tip[0] < best_center[0]
-                        self.audio_thread.update_params(effective_distance, direction)
+                        self.audio_thread.update_params(index_finger_tip, best_center, effective_distance)
                         print(f"Closest distance (pixels): {min_distance:.2f}")
                         tip = tuple(map(int, index_finger_tip))
                         center_pt = tuple(map(int, best_center))

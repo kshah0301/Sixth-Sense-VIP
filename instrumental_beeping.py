@@ -5,18 +5,20 @@ import time
 import threading
 import librosa
 import os
+import parler_tts
+import mimic
 
 # ================================================
 # InstrumentSampler class: encapsulate loading and playing samples.
 # ================================================
 class InstrumentSampler:
-    def __init__(self, piano_samples=None, samplerate=44100):
+    #def __init__(self, piano_samples=None, samplerate=44100):
+    def __init__(self, directional_samples=None, samplerate=44100):
         """
         Parameters:
           - piano_samples: a dictionary mapping key names to file paths.
             Default keys: "A5", "G5", "E5", "C5".
           - samplerate: desired sample rate in Hz.
-        """
         if piano_samples is None:
             # Define default sample files.
             piano_samples = {
@@ -25,26 +27,56 @@ class InstrumentSampler:
                 "E5": "E5.wav",   # ~659.26 Hz sample
                 "C5": "C5.wav"    # ~523.25 Hz sample
             }
-        self.piano_samples = piano_samples
+        """
+
+        if directional_samples is None:
+            # Define default directional sample files.
+            directional_samples = {
+                "left": "left.wav",
+                "right": "right.wav", 
+                "up": "up.wav",
+                "down": "down.wav"
+            }
+        #self.piano_samples = piano_samples
+        self.directional_samples = directional_samples
         self.samplerate = samplerate
         self.preloaded_samples = {}
         self.preload_samples()
 
     def preload_samples(self):
         """Load each piano sample from disk into memory."""
+        """
         for key, filename in self.piano_samples.items():
             if not os.path.exists(filename):
                 print(f"Warning: {filename} not found. Skipping.")
                 continue
             y, sr = librosa.load(filename, sr=self.samplerate)
             self.preloaded_samples[key] = y
+        """
+        for key, filename in self.directional_samples.items():
+            if not os.path.exists(filename):
+                print(f"Warning: {filename} not found. Please run directional_audio_generator.py first.")
+                continue
+            y, sr = librosa.load(filename, sr=self.samplerate)
+            self.preloaded_samples[key] = y
         print("Samples preloaded:", list(self.preloaded_samples.keys()))
 
+    def get_sample_for_direction(self, direction, duration = 0.15):
+        if direction not in self.preloaded_samples:
+            raise ValueError(f"Sample for direction {direction} not loaded.")
+        sample = self.preloaded_samples[key]
+        desired_length = int(self.samplerate * duration)
+        if len(sample) < desired_length:
+            sample = np.pad(sample, (0, desired_length - len(sample)), mode='constant')
+        else:
+            sample = sample[:desired_length]
+        return sample
+    """
     def get_sample_for_key(self, key, duration=0.15):
-        """
+     
         Retrieve the preloaded sample for the given key.
         Trim or pad the sample so that its length is exactly `duration` seconds.
-        """
+  
         if key not in self.preloaded_samples:
             raise ValueError(f"Sample for key {key} not loaded.")
         sample = self.preloaded_samples[key]
@@ -54,15 +86,17 @@ class InstrumentSampler:
         else:
             sample = sample[:desired_length]
         return sample
-
-    def play_instrument_sample(self, key, amplitude=1.0, pan=0.0,samplerate=44100, duration=0.1):
+    """
+    #def play_instrument_sample(self, key, amplitude=1.0, pan=0.0,samplerate=44100, duration=0.1):
+    def play_directional_sample(self, direction, amplitude=1.0, pan=0.0, samplerate=44100, duration=0.1):
+        sample = self.get_sample_for_direction(direction, duration=duration)
         """
         Play the preloaded instrument sample for the specified key.
           - amplitude: Volume multiplier.
           - pan: Stereo panning value (-1: full left, 0: center, 1: full right).
         Returns the stereo sample as a NumPy array.
         """
-        sample = self.get_sample_for_key(key, duration=duration)
+        #sample = self.get_sample_for_key(key, duration=duration)
         # Compute stereo gains using linear panning:
         left_gain = amplitude * (1 - pan) / 2.0
         right_gain = amplitude * (1 + pan) / 2.0
@@ -118,7 +152,8 @@ class AudioThread(threading.Thread):
         # Instantiate an InstrumentSampler.
         self.instrument_sampler = InstrumentSampler(samplerate=self.samplerate)
 
-    def select_key_and_interval(self, distance):
+    #def select_key_and_interval(self, distance):
+    def select_direction_and_interval(self, finger_pos, target_center, distance):
         """
         根据距离选择琴键和静音间隔：
         - 如果 distance < 0：
@@ -139,44 +174,51 @@ class AudioThread(threading.Thread):
         - 如果 distance >= 150：
               返回 ("C5", 1.7)
         """
-        if distance < 0:
-            interval = 0.05
-            return "A5", interval
-        elif distance < 30:
-            interval = np.interp(distance, [self.min_distance, 30], [0.05, 0.35])
-            return "G5", interval
-        elif distance < 90:
-            if distance < 50:
-                interval = 0.5
-            elif distance < 70:
-                interval = 0.65
+        
+        if finger_pos is None or target_center is None:
+            return "up", 1.0  # Default direction and slow interval
+        
+        # Calculate direction vector from finger to target
+        dx = target_center[0] - finger_pos[0]  # positive = target is to the right
+        dy = target_center[1] - finger_pos[1]  # positive = target is below
+        
+        # Determine primary direction based on larger offset
+        if abs(dx) > abs(dy):
+            # Horizontal movement needed
+            if dx > 0:
+                direction = "right"
             else:
-                interval = 0.8
-            return "E5", interval
-        elif distance < 150:
-            if distance < 110:
-                interval = 0.9
-            elif distance < 120:
-                interval = 1.1
-            elif distance < 135:
-                interval = 1.3
-            else:
-                interval = 1.5
-            return "C5", interval
+                direction = "left"
         else:
-            interval = 1.7
-            return "C5", interval
-
-    def play_instrument_for_key(self, key):
+            # Vertical movement needed
+            if dy > 0:
+                direction = "down"
+            else:
+                direction = "up"
+        # Calculate interval based on distance (closer = faster feedback)
+        if distance < 20:
+            interval = 0.1  # Very fast when very close
+        elif distance < 50:
+            interval = 0.2  # Fast when close
+        elif distance < 100:
+            interval = 0.4  # Medium speed
+        elif distance < 150:
+            interval = 0.6  # Slower when far
+        else:
+            interval = 1.0  # Slow when very far
+        return direction, interval
+    #def play_instrument_for_key(self, key):
         """使用当前音量和立体声平移，播放指定琴键的采样。"""
+    def play_directional_audio(self, direction):
         with self.lock:
             amp = self.overall_amplitude  # 固定值（13）
             pan = self.pan
-        stereo_wave = self.instrument_sampler.play_instrument_sample(key, amplitude=amp, pan=pan,
-                                                                     samplerate=self.samplerate, duration=self.beep_duration)
+            stereo_wave = self.instrument_sampler.play_directional_sample(direction, amplitude=amp, pan=pan,
+                                                                    samplerate=self.samplerate, duration=self.beep_duration)                                                            
         self.audio_buffer.append(stereo_wave)
 
-    def update_params(self, distance, direction):
+    #def update_params(self, distance, direction):
+    def update_params(self, finger_pos, target_center, distance):
         """
         更新参数：
           - distance: float，属于 [min_distance, max_distance]。0 表示最大音量。
@@ -184,13 +226,14 @@ class AudioThread(threading.Thread):
         立体声平移按照距离线性缩放（距离为 0 时为 0，距离为 max_distance 时为 ±1）。
         Amplitude 固定为 13。
         """
-        new_amplitude = 13  # 固定值
-        if distance <= 0:
-            effective_pan = 0.0
+        new_amplitude = 13  # Fixed value
+        # Calculate panning based on horizontal offset
+        if finger_pos is not None and target_center is not None:
+            dx = target_center[0] - finger_pos[0]
+            effective_pan = np.clip(dx / 100.0, -1.0, 1.0)  # Scale horizontal offset
         else:
-            scale = distance / self.max_distance
-            effective_pan = scale if direction else -scale
-        effective_pan = np.clip(effective_pan, -1.0, 1.0)
+            effective_pan = 0.0
+
         with self.lock:
             self.current_distance = distance
             self.last_update = time.time()
@@ -202,18 +245,25 @@ class AudioThread(threading.Thread):
             with self.lock:
                 if self.last_update is None or (time.time() - self.last_update) > self.update_timeout:
                     self.current_distance = None
+                    self.finger_pos = None
+                    self.target_center = None
             with self.lock:
                 distance = self.current_distance
+                finger_pos = self.finger_pos
+                target_center = self.target_center
             if distance is None:
                 time.sleep(self.max_interval)
                 continue
             
             # 根据距离选取琴键和静音间隔。
-            key, interval = self.select_key_and_interval(distance)
-            print(f"Distance: {distance:.2f} -> Key: {key}, Silence Interval: {interval:.2f} s, Pan: {self.pan:.2f}")
+            #key, interval = self.select_key_and_interval(distance)
+            #print(f"Distance: {distance:.2f} -> Key: {key}, Silence Interval: {interval:.2f} s, Pan: {self.pan:.2f}")
+            direction, interval = self.select_direction_and_interval(finger_pos, target_center, distance)
+            print(f"Distance: {distance:.2f} -> Direction: {direction}, Interval: {interval:.2f} s, Pan: {self.pan:.2f}")
             
-            self.play_instrument_for_key(key)
+            #self.play_instrument_for_key(key)
             # 插入静音段，防止声音重叠。
+            self.play_directional_audio(direction)
             silence_samples = int(self.samplerate * interval)
             silence_stereo = np.column_stack((np.zeros(silence_samples, dtype=np.float32),
                                                np.zeros(silence_samples, dtype=np.float32)))
