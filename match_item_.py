@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
-# match_item.py — step-by-step filtering only (brand → name → qty with interactive refinement)
+# match_item.py — strict brand → strict name → qty refinement + suggestions + optional image download
 #
 # deps:
-#   pip install orjson unidecode rapidfuzz numpy
+#   pip install orjson unidecode rapidfuzz numpy requests
 
 import sys, re, argparse, orjson
 from unidecode import unidecode
 from rapidfuzz import fuzz
+
+# Optional image download
+try:
+    import requests
+    HAVE_REQUESTS = True
+except ImportError:
+    HAVE_REQUESTS = False
+
 
 # ---------------- text utils ----------------
 def canon(s: str) -> str:
@@ -16,12 +24,15 @@ def canon(s: str) -> str:
     s = re.sub(r"[^a-z0-9\.\-\+\sx×]", " ", s)
     return re.sub(r"\s+", " ", s).strip()
 
+
 def tokenize(s: str):
     return [t for t in canon(s).split() if t]
+
 
 def contains_any(hay: str, needles):
     H = " " + canon(hay) + " "
     return any((" " + n + " ") in H for n in needles)
+
 
 # ---------------- brand similarity & gating ----------------
 BRAND_STOPWORDS = {
@@ -29,6 +40,7 @@ BRAND_STOPWORDS = {
     "foods","food","market","farms","farm","dairy","beverage","kitchen","kitchens","group",
     "organic","natural","naturals","quality","select","selects","choice","choices"
 }
+
 
 def _split_brand_variants(brand: str):
     """Split comma/ampersand/slash separated brand strings into parts."""
@@ -42,8 +54,10 @@ def _split_brand_variants(brand: str):
             out.append(c)
     return out
 
+
 def brand_strong_tokens(s: str):
     return {t for t in tokenize(s) if t not in BRAND_STOPWORDS}
+
 
 def brand_similarity(user_brand: str, candidate_brand: str) -> float:
     """Max token-set fuzzy similarity between user brand and any candidate brand variant."""
@@ -55,6 +69,7 @@ def brand_similarity(user_brand: str, candidate_brand: str) -> float:
     cand_parts = _split_brand_variants(candidate_brand) or [canon(candidate_brand)]
     sims = [fuzz.token_set_ratio(ub, part)/100.0 for part in cand_parts if part]
     return max(sims) if sims else 0.0
+
 
 def brand_ok(row, user_brand: str, min_sim: float, partial_floor: float = 0.50) -> bool:
     # Strict brand gate (used only when no exact-variant match exists in the catalog)
@@ -69,6 +84,7 @@ def brand_ok(row, user_brand: str, min_sim: float, partial_floor: float = 0.50) 
     strong_overlap = len(u_tok & c_tok) >= 1
     return strong_overlap and sim >= float(partial_floor)
 
+
 def has_exact_brand_variant(row, user_brand: str) -> bool:
     """True if ANY variant in row['brand'] exactly equals the user brand (canonical)."""
     if not user_brand.strip():
@@ -81,10 +97,42 @@ def has_exact_brand_variant(row, user_brand: str) -> bool:
             return True
     return False
 
+
+def filter_brand(rows, brand, strict_min=0.60, partial_floor=0.50):
+    """
+    BRAND FILTER with exact-match priority:
+      1) If ANY rows contain a brand VARIANT that equals the user brand (canonical),
+         keep ONLY those rows.
+      2) Else, keep rows that pass the strict brand gate (brand_ok).
+    """
+    if not brand.strip():
+        return rows
+
+    exact = [r for r in rows if has_exact_brand_variant(r, brand)]
+    if exact:
+        return exact
+
+    kept = [r for r in rows if brand_ok(r, brand, strict_min, partial_floor)]
+    return kept
+
+
+def best_brand_suggestions(rows, brand, k=5, suggest_min=0.45):
+    scored = []
+    for i, r in enumerate(rows):
+        sim = brand_similarity(brand, r.get("brand", ""))
+        if sim >= suggest_min:
+            scored.append((sim, i))
+    if not scored:
+        scored = [(brand_similarity(brand, r.get("brand", "")), i) for i, r in enumerate(rows)]
+    scored.sort(reverse=True)
+    return [rows[i] for s, i in scored[:k]]
+
+
 # ---------------- quantity parsing & matching ----------------
 
 # Fraction normalization: "1/2" -> "0.5", "3/4" -> "0.75"
 _FRACTION_RE = re.compile(r'(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)')
+
 
 def _norm_qty_string(q: str) -> str:
     """Normalize quantity string but KEEP enough structure for numeric parsing."""
@@ -105,31 +153,41 @@ def _norm_qty_string(q: str) -> str:
     s = s.replace(",", " ")
     return s
 
+
 # number + unit; unit can contain letters, dots, hyphens, spaces, parentheses
 _NUM_UNIT = re.compile(r'(\d+(?:\.\d+)?)[\s]*([a-zA-Z][a-zA-Z\.\-\s\(\)]*)')
+
 
 def _collapse_unit(u: str) -> str:
     return re.sub(r'[^a-z]', '', (u or '').lower())
 
+
 UNIT_ALIAS = {
-    "floz":"fluid_ounce", "flounce":"fluid_ounce",
-    "oz":"ounce",
-    "ml":"milliliter", "millilitre":"milliliter", "cl":"milliliter",
-    "l":"liter", "lt":"liter",
-    "g":"gram", "gr":"gram",
-    "kg":"kilogram", "mg":"milligram",
-    "lb":"pound", "lbs":"pound",
-    "ct":"count", "pack":"count", "pk":"count"
+    "floz": "fluid_ounce", "flounce": "fluid_ounce",
+    "oz": "ounce",
+    "ml": "milliliter", "millilitre": "milliliter", "cl": "milliliter",
+    "l": "liter", "lt": "liter",
+    "g": "gram", "gr": "gram",
+    "kg": "kilogram", "mg": "milligram",
+    "lb": "pound", "lbs": "pound",
+    "ct": "count", "pack": "count", "pk": "count"
 }
+
 TO_BASE = {
-    ("ounce","gram"):28.3495, ("pound","gram"):453.592, ("kilogram","gram"):1000.0, ("milligram","gram"):1/1000.0,
-    ("fluid_ounce","milliliter"):29.5735, ("liter","milliliter"):1000.0
+    ("ounce", "gram"): 28.3495,
+    ("pound", "gram"): 453.592,
+    ("kilogram", "gram"): 1000.0,
+    ("milligram", "gram"): 1/1000.0,
+    ("fluid_ounce", "milliliter"): 29.5735,
+    ("liter", "milliliter"): 1000.0
 }
+
 BASE_OF = {
-    "ounce":"gram","pound":"gram","kilogram":"gram","gram":"gram","milligram":"gram",
-    "fluid_ounce":"milliliter","liter":"milliliter","milliliter":"milliliter",
-    "count":"count"
+    "ounce": "gram", "pound": "gram", "kilogram": "gram", "gram": "gram", "milligram": "gram",
+    "fluid_ounce": "milliliter", "liter": "milliliter", "milliliter": "milliliter",
+    "count": "count"
 }
+
 
 def _to_base(val, canon_unit):
     base = BASE_OF.get(canon_unit, canon_unit)
@@ -138,6 +196,7 @@ def _to_base(val, canon_unit):
         if fac:
             val *= fac
     return val, base
+
 
 def parse_qty(q: str):
     """
@@ -148,8 +207,7 @@ def parse_qty(q: str):
         return {"mass": None, "volume": None, "count": None}
 
     s = _norm_qty_string(q)
-    # run a second pass through canon to normalize spaces / strip junk,
-    # but after we've already converted fractions
+    # second pass through canon to normalize spaces/junk, *after* fraction conversion
     s = canon(s)
 
     mass, vol, cnt = None, None, None
@@ -184,6 +242,7 @@ def parse_qty(q: str):
 
     return {"mass": mass, "volume": vol, "count": cnt}
 
+
 def qty_close(user_q: str, cat_q: str, tol=0.18):
     """
     Coarse filter: accept if ANY comparable dimension is within ±tol relative error.
@@ -194,7 +253,7 @@ def qty_close(user_q: str, cat_q: str, tol=0.18):
         return True
     U, C = parse_qty(user_q), parse_qty(cat_q)
     compared = False
-    for k in ("mass","volume","count"):
+    for k in ("mass", "volume", "count"):
         u, c = U[k], C[k]
         if u is None or c is None:
             continue
@@ -203,6 +262,7 @@ def qty_close(user_q: str, cat_q: str, tol=0.18):
         if rel <= tol:
             return True
     return not compared
+
 
 def qty_numeric_similarity(user_q: str, cat_q: str):
     """
@@ -219,11 +279,64 @@ def qty_numeric_similarity(user_q: str, cat_q: str):
         rel = abs(u - c) / max(u, c, 1e-6)
         return max(0.0, 1.0 - rel)
 
-    for k in ("mass","volume","count"):
+    for k in ("mass", "volume", "count"):
         s = _sim(U[k], C[k])
         if s is not None:
             sims.append(s)
     return max(sims) if sims else None
+
+
+# ---------------- NAME MATCHING ----------------
+def best_name_suggestions(rows, name, k=5):
+    scored = [(fuzz.token_set_ratio(canon(name), canon(r.get("name", "")))/100.0, i)
+              for i, r in enumerate(rows)]
+    scored.sort(reverse=True)
+    return [rows[i] for s, i in scored[:k]]
+
+
+def filter_name_strict(rows, user_name: str):
+    """
+    Strict product name matching:
+      1) canonical exact equality
+      2) startswith
+      3) substring
+      4) fuzzy fallback
+    """
+    if not user_name.strip():
+        return rows
+
+    uq = canon(user_name)
+    cname_list = [canon(r.get("name", "")) for r in rows]
+
+    # 1) exact canonical equality
+    exact = [r for r, cn in zip(rows, cname_list) if cn == uq]
+    if len(exact) == 1:
+        return exact
+    if len(exact) > 1:
+        return exact
+
+    # 2) startswith
+    starts = [r for r, cn in zip(rows, cname_list) if cn.startswith(uq)]
+    if len(starts) == 1:
+        return starts
+    if len(starts) > 1:
+        return starts
+
+    # 3) substring
+    sub = [r for r, cn in zip(rows, cname_list) if uq in cn]
+    if len(sub) == 1:
+        return sub
+    if len(sub) > 1:
+        return sub
+
+    # 4) fuzzy fallback
+    kept = []
+    for r in rows:
+        sim = fuzz.token_set_ratio(uq, canon(r.get("name", ""))) / 100.0
+        if sim >= 0.62:
+            kept.append(r)
+    return kept
+
 
 # ---------------- catalog I/O ----------------
 def load_catalog(path):
@@ -234,76 +347,66 @@ def load_catalog(path):
                 continue
             d = orjson.loads(line)
             rows.append({
-                "code": d.get("code",""),
-                "name": d.get("product_name",""),
-                "brand": d.get("brands",""),
-                "qty": d.get("quantity",""),
-                "keywords": " ".join(d.get("keywords",[]) or [])
+                "code": d.get("code", ""),
+                "name": d.get("product_name", ""),
+                "brand": d.get("brands", ""),
+                "qty": d.get("quantity", ""),
+                "keywords": " ".join(d.get("keywords", []) or [])
             })
     return rows
 
-# ---------------- filtering steps ----------------
-def filter_brand(rows, brand, strict_min=0.60, partial_floor=0.50):
-    """
-    BRAND FILTER with exact-match priority:
-      1) If ANY rows contain a brand VARIANT that equals the user brand (canonical, case/diacritics-insensitive),
-         keep ONLY those rows.
-      2) Else, keep rows that pass the strict brand gate (brand_ok).
-      3) If still empty, the caller should request clarification and show suggestions.
-    """
-    if not brand.strip():
-        return rows
-
-    # Step 1: exact brand-variant match → hard keep-only
-    exact = [r for r in rows if has_exact_brand_variant(r, brand)]
-    if exact:
-        return exact
-
-    # Step 2: strict gate (fuzzy + strong-token overlap)
-    kept = [r for r in rows if brand_ok(r, brand, strict_min, partial_floor)]
-    return kept
-
-def best_brand_suggestions(rows, brand, k=5, suggest_min=0.45):
-    scored = []
-    for i, r in enumerate(rows):
-        sim = brand_similarity(brand, r.get("brand",""))
-        if sim >= suggest_min:
-            scored.append((sim, i))
-    if not scored:
-        scored = [(brand_similarity(brand, r.get("brand","")), i) for i, r in enumerate(rows)]
-    scored.sort(reverse=True)
-    return [rows[i] for s,i in scored[:k]]
-
-# Name filter: require a hit on PRODUCT NAME (keywords cannot be the sole reason)
-def name_ok(row, user_name: str, name_min: float = 0.62) -> bool:
-    if not user_name.strip():
-        return True
-    ut = set(tokenize(user_name))
-    name_tokens = set(tokenize(row.get("name","")))
-    if ut & name_tokens:
-        return True
-    sim = fuzz.token_set_ratio(canon(user_name), canon(row.get("name","")))/100.0
-    return sim >= name_min
-
-def filter_name(rows, name):
-    if not name.strip():
-        return rows
-    kept = [r for r in rows if name_ok(r, name)]
-    return kept
-
-def best_name_suggestions(rows, name, k=5):
-    scored = [(fuzz.token_set_ratio(canon(name), canon(r.get("name","")))/100.0, i)
-              for i,r in enumerate(rows)]
-    scored.sort(reverse=True)
-    return [rows[i] for s,i in scored[:k]]
 
 def print_block(title, rows):
     print(f"\n[{title}]")
     if not rows:
         print("  (none)")
         return
-    for i,r in enumerate(rows,1):
+    for i, r in enumerate(rows, 1):
         print(f" {i:>2}. {r['brand']} — {r['name']} ({r['qty']}) [code={r['code']}]")
+
+def download_image(row, out_dir="images"):
+    if not HAVE_REQUESTS:
+        print("[image] requests not installed")
+        return
+
+    code = row.get("code", "").strip()
+    brand = canon(row.get("brand", "")).replace(" ", "_")
+    name  = canon(row.get("name", "")).replace(" ", "_")
+
+    # fallback if brand or name is missing
+    filebase = f"{brand}-{name}" if brand or name else code or "unknown_product"
+
+    url = f"https://world.openfoodfacts.org/api/v0/product/{code}.json"
+    try:
+        resp = requests.get(url, timeout=5)
+        if resp.status_code != 200:
+            print("[image] OF returned", resp.status_code)
+            return
+        data = resp.json()
+        prod = data.get("product", {})
+        img = prod.get("image_front_url") or prod.get("image_url")
+        if not img:
+            print("[image] no image available")
+            return
+
+        imgdata = requests.get(img, timeout=8)
+        if imgdata.status_code != 200:
+            print("[image] img download failed")
+            return
+
+        import os
+        os.makedirs(out_dir, exist_ok=True)
+        out_path = f"{out_dir}/{filebase}.jpg"
+
+        with open(out_path, "wb") as f:
+            f.write(imgdata.content)
+
+        print("[image] saved to", out_path)
+
+    except Exception as e:
+        print("[image] error:", e)
+
+
 
 # ---------------- main ----------------
 def main():
@@ -320,6 +423,8 @@ def main():
                     help="lower fuzzy floor when strong-token overlap exists (used only when no exact brand match)")
     ap.add_argument("--brand_suggest_min", type=float, default=0.45,
                     help="min similarity to show as suggestion when no strict matches")
+    ap.add_argument("--download_image", action="store_true", default=True,
+                    help="download OpenFoodFacts image for the final match")
     args = ap.parse_args()
 
     rows = load_catalog(args.catalog)
@@ -328,6 +433,7 @@ def main():
     working = filter_brand(rows, args.brand,
                            strict_min=args.brand_min,
                            partial_floor=args.brand_partial_floor)
+
     if not working:
         sugg = best_brand_suggestions(rows, args.brand,
                                       k=args.max_show,
@@ -335,27 +441,28 @@ def main():
         print_block("brand suggestions (no strict match)", sugg)
         print("\n[status] need brand clarification")
         sys.exit(0)
-    if 1 < len(working) <= args.max_show:
-        print_block("shortlist after brand", working)
+    #if 1 < len(working) <= args.max_show:
+        #print_block("shortlist after brand", working)
+        
 
-    # 2) NAME
-    working2 = filter_name(working, args.product)
+    # 2) NAME (strict: exact > startswith > substring > fuzzy)
+    working2 = filter_name_strict(working, args.product)
     if not working2:
         sugg = best_name_suggestions(working, args.product, k=args.max_show)
         print_block("name suggestions (no strict name match)", sugg)
         print("\n[status] need product-name clarification")
         sys.exit(0)
     working = working2
-    if 1 < len(working) <= args.max_show:
-        print_block("shortlist after name", working)
+    #if 1 < len(working) <= args.max_show:
+        #print_block("shortlist after name", working)
 
     # 3) OPTIONAL CLI QUANTITY (soft filter only; coarse narrowing)
     if args.quantity.strip():
-        soft = [r for r in working if qty_close(args.quantity, r.get("qty",""))]
+        soft = [r for r in working if qty_close(args.quantity, r.get("qty", ""))]
         if soft:
             working = soft
 
-    # If too many remain → interactive quantity refinement
+    # 4) If too many remain → interactive quantity refinement
     if len(working) > args.max_show:
         print_block("Options", working[:args.max_show])
         qty_input = input(
@@ -365,21 +472,19 @@ def main():
 
         if qty_input:
             # compute numeric similarity for each candidate
-            sims = [qty_numeric_similarity(qty_input, r.get("qty","")) for r in working]
-            pairs = [(s,i) for i,s in enumerate(sims) if s is not None]
+            sims = [qty_numeric_similarity(qty_input, r.get("qty", "")) for r in working]
+            pairs = [(s, i) for i, s in enumerate(sims) if s is not None]
 
             if pairs:
-                max_sim = max(s for s,i in pairs)
+                max_sim = max(s for s, i in pairs)
                 # STRICT group: nearly best AND almost exact numeric match
                 STRICT_THRESH = 0.99
-                strict_idx = [i for s,i in pairs if (s >= max_sim - 1e-6) and (s >= STRICT_THRESH)]
+                strict_idx = [i for s, i in pairs
+                              if (s >= max_sim - 1e-6) and (s >= STRICT_THRESH)]
 
                 if len(strict_idx) == 1:
                     # single clear numeric match → auto-select
                     working = [working[strict_idx[0]]]
-                    print_block("FINAL", working)
-                    print("\n[status] single match")
-                    sys.exit(0)
                 elif len(strict_idx) > 1:
                     # multiple items share the same numeric size (e.g., several 1.89 L milks)
                     narrowed = [working[i] for i in strict_idx]
@@ -395,9 +500,6 @@ def main():
                                 working = [working[idx]]
                         except Exception:
                             print("Please enter a valid number.")
-                else:
-                    # we had numeric info but nothing close enough to be strict; fall through
-                    pass
 
         # If STILL too many candidates → simple manual choice
         if len(working) > args.max_show:
@@ -428,6 +530,8 @@ def main():
     print_block("FINAL", working[:args.max_show])
     if len(working) == 1:
         print("\n[status] single match")
+        if args.download_image:
+            download_image(working[0])
         sys.exit(0)
     elif len(working) == 0:
         print("\n[status] no candidates")
@@ -435,6 +539,7 @@ def main():
     else:
         print("\n[status] multiple candidates")
         sys.exit(0)
+
 
 if __name__ == "__main__":
     main()
