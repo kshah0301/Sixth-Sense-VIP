@@ -759,11 +759,11 @@ def main():
     parser.add_argument("--min_det_conf", type=float, default=0.3, help="MediaPipe min_detection_confidence")
     parser.add_argument("--min_track_conf", type=float, default=0.3, help="MediaPipe min_tracking_confidence")
 
-    parser.add_argument("--yolo_model", default="yolov8s-world.pt", help="YOLOWorld model path")
+    parser.add_argument("--yolo_model", default="yoloe-11m-seg.pt", help="YOLOWorld model path")
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "mps", "cuda"], help="Torch device")
 
     # Finger fallback YOLO config
-    parser.add_argument("--finger_yolo_conf", type=float, default=0.001, help="Finger fallback YOLO conf")
+    parser.add_argument("--finger_yolo_conf", type=float, default=0.01, help="Finger fallback YOLO conf")
     parser.add_argument("--finger_yolo_iou", type=float, default=0.3, help="Finger fallback YOLO IoU")
     parser.add_argument("--finger_point_mode", default="top_center", choices=["top_center", "center"],
                         help="Convert selected finger fallback box to point")
@@ -777,7 +777,7 @@ def main():
                         help='Custom finger YOLO prompts, e.g. --finger_yolo_classes fingertip "finger tip" fingernail "index finger" hand')
 
     # Item YOLO config
-    parser.add_argument("--item_yolo_conf", type=float, default=0.001, help="Item YOLO conf")
+    parser.add_argument("--item_yolo_conf", type=float, default=0.01, help="Item YOLO conf")
     parser.add_argument("--item_yolo_iou", type=float, default=0.3, help="Item YOLO IoU")
     parser.add_argument("--item_max_area_ratio", type=float, default=0.40,
                         help="Filter huge item boxes above this image-area ratio")
