@@ -69,6 +69,7 @@ openai-whisper==20240930
 opencv-contrib-python==4.11.0.86
 opencv-python==4.11.0.86
 opencv-python-headless==4.11.0.86
+google-genai
 opt-einsum==3.3.0
 optree==0.15.0
 packaging==25.0

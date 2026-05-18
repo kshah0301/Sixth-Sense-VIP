@@ -1,3 +1,31 @@
+import os
+
+def check_directional_audio_files():
+    """
+    Check if directional audio files (left.wav, right.wav, up.wav, down.wav) exist.
+    """
+    directions = ["left", "right", "up", "down"]
+    missing_files = []
+    
+    for direction in directions:
+        filename = f"{direction}.wav"
+        if os.path.exists(filename):
+            print(f"✓ {filename} found")
+        else:
+            print(f"✗ {filename} missing")
+            missing_files.append(filename)
+    
+    if missing_files:
+        print(f"\nMissing files: {', '.join(missing_files)}")
+        print("Please add these audio files to the project directory.")
+        return False
+    else:
+        print("\nAll directional audio files found!")
+        return True
+
+if __name__ == "__main__":
+    check_directional_audio_files()
+
 import numpy as np
 import soundfile as sf
 import subprocess
@@ -69,3 +97,5 @@ def generate_synthesized_audio(direction, filename, samplerate=44100):
 if __name__ == "__main__":
     # Generate all directional audio files
     generate_directional_audio_files()
+
+

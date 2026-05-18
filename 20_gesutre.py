@@ -295,26 +295,17 @@ def text_to_speech(text, voice="en_US/ljspeech_low"):
     # Create a temporary file to store audio 
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_audio:
         output_file = temp_audio.name
-    # Define Mimic 3 command
-    mimic3_cmd = [
-        "mimic3",    # Mimic 3 command
-        "--voice", voice,  # Specify the voice
-        "--stdout",      # Output audio to stdout
-        text             # Input text
-    ]
     try:
-        # Generate TTS audio and save it to a temporary file
-        with open(output_file, "wb") as audio_file:
-            subprocess.run(mimic3_cmd, stdout=audio_file, check=True)
+        # Generate TTS audio using kokoro
+        import sound4567
+        sound4567.speak(text, output_file=output_file)
         # Play the audio using an appropriate command for your OS
         if os.name == "posix":  # macOS or Linux
             os.system(f"afplay {output_file}")
         elif os.name == "nt":  # Windows
             os.system(f"start {output_file}")
-    except FileNotFoundError:
-        print("Mimic 3 is not installed or not found in PATH.")
-    except subprocess.CalledProcessError as e:
-        print(f"Error generating speech: {e}")
+    except Exception as e:
+        print(f"Error generating speech with kokoro: {e}")
     finally:
         if os.path.exists(output_file):
             os.remove(output_file)

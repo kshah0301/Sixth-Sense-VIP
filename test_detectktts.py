@@ -17,7 +17,9 @@ import soundfile as sf
 from instrumental_beeping import AudioThread
 from test_stt import WhisperTranscriber
 from directional_audio_generator import check_directional_audio_files
-import kitten_tts 
+import kitten_tts
+from recipes import get_recipe_ingredients
+from match_item_ import off_search_top_products, download_image, HAVE_REQUESTS
 
 
 class GestureYoloOcr:
@@ -39,13 +41,149 @@ class GestureYoloOcr:
         # Display option
         self.display_green_boxes = False
 
-        kitten_tts.speak("Name the item you are looking for?")
-        self.transcriber = WhisperTranscriber(duration=2, sample_rate=16000, model_name="base")
-        self.transcriber.start()
-        self.transcriber.join()
-        transcription_result = self.transcriber.transcription
-        #self.desired_product_keywords = transcription_result.split() 
-        self.desired_product_keywords =  ['RiceKrispies']
+        # Ask the user whether they want to search for a single item
+        # or for ingredients for a meal.
+        kitten_tts.speak("Say item or say recipe.")
+        #mode_transcriber = WhisperTranscriber(duration=5, sample_rate=16000, model_name="small")
+        #mode_transcriber.start()
+        #mode_transcriber.join()
+        #mode_choice = (mode_transcriber.transcription or "").strip().lower()
+        mode_choice = "recipe"
+        print("Mode choice transcription:", mode_choice)
+
+        mode = "recipe"
+        if "recipe" in mode_choice:
+            mode = "meal"
+        elif "item" in mode_choice:
+            mode = "item"
+
+        if mode == "item":
+            kitten_tts.speak("Name the item you are looking for.")
+            self.transcriber = WhisperTranscriber(duration=5, sample_rate=16000, model_name="small")
+            self.transcriber.start()
+            self.transcriber.join()
+            transcription_result = (self.transcriber.transcription or "").strip()
+            print("Item transcription:", transcription_result)
+            if transcription_result:
+                self.desired_product_keywords = [transcription_result]
+            else:
+                self.desired_product_keywords = ["Poland Spring"]
+        else:
+            kitten_tts.speak("Name the meal you would like to make.")
+            #self.transcriber = WhisperTranscriber(duration=5, sample_rate=16000, model_name="small")
+            #self.transcriber.start()
+            #self.transcriber.join()
+            #meal_description = (self.transcriber.transcription or "").strip()
+            meal_description = "carbonara"
+            print("Meal transcription:", meal_description)
+
+            ingredients = []
+            if meal_description:
+                try:
+                    ingredients = get_recipe_ingredients(meal_description)
+                except Exception as e:
+                    print("Error getting recipe ingredients:", e)
+
+            if ingredients:
+                # Optional: let the user pick a specific branded product for each ingredient
+                kitten_tts.speak(
+                    "Say auto to search by ingredients, or say choose to pick from top five Open Food Facts results."
+                )
+                chooser = WhisperTranscriber(duration=4, sample_rate=16000, model_name="small")
+                #chooser.start()
+                #chooser.join()
+                chooser_text = (chooser.transcription or "").strip().lower()
+                chooser_text = "choose"
+                print("Chooser transcription:", chooser_text)
+
+                def _parse_choice(s: str):
+                    s = (s or "").lower().strip()
+                    if not s:
+                        return None
+                    mapping = {
+                        "1": 1,
+                        "one": 1,
+                        "first": 1,
+                        "2": 2,
+                        "two": 2,
+                        "second": 2,
+                        "3": 3,
+                        "three": 3,
+                        "third": 3,
+                        "4": 4,
+                        "four": 4,
+                        "fourth": 4,
+                        "5": 5,
+                        "five": 5,
+                        "fifth": 5,
+                    }
+                    for k, v in mapping.items():
+                        if k in s:
+                            return v
+                    return None
+
+                if "choose" in chooser_text or "pick" in chooser_text:
+                    if not HAVE_REQUESTS:
+                        print("[OFF] requests not installed; cannot query OpenFoodFacts search API.")
+                        kitten_tts.speak("Requests is not installed, falling back to auto mode.")
+                        self.desired_product_keywords = ingredients
+                    else:
+                        chosen_rows = []
+                        chosen_keywords = []
+                        for ing in ingredients:
+                            cands = off_search_top_products(ing, limit=5, debug=True)
+                            if not cands:
+                                # Fallback: try removing brand-like prefix ("Brand, rest") or first token.
+                                fallback = ing
+                                if "," in fallback:
+                                    fallback = fallback.split(",", 1)[1].strip()
+                                else:
+                                    parts = fallback.split()
+                                    if len(parts) > 2:
+                                        fallback = " ".join(parts[1:])
+                                if fallback != ing:
+                                    cands = off_search_top_products(fallback, limit=5, debug=True)
+
+                            if not cands:
+                                print(f"[OFF] no results for: {ing}")
+                                chosen_keywords.append(ing)
+                                continue
+
+                            print(f"\n[OFF top 5] {ing}")
+                            for i, r in enumerate(cands, 1):
+                                print(f" {i}. {r.get('brand','')} — {r.get('name','')} ({r.get('qty','')}) [code={r.get('code','')}]")
+
+                            kitten_tts.speak(f"For {ing}, say a number one through five.")
+                            #pick = WhisperTranscriber(duration=3, sample_rate=16000, model_name="small")
+                            #pick.start()
+                            #pick.join()
+                            #pick_text = (pick.transcription or "").strip()
+                            n = int(input("Choose number"))
+                            #print("Pick transcription:", pick_text)
+                            #1n = _parse_choice(pick_text) or 1
+                            n = max(1, min(5, n))
+                            row = cands[n - 1]
+                            chosen_rows.append(row)
+                            kw = f"{row.get('brand','')} {row.get('name','')}".strip()
+                            chosen_keywords.append(kw or ing)
+
+                        # Optional image downloads for the chosen products
+                        if chosen_rows:
+                            for row in chosen_rows:
+                                download_image(row, out_dir="images")
+
+                        self.desired_product_keywords = chosen_keywords
+                else:
+                    self.desired_product_keywords = ingredients
+            elif meal_description:
+                # Fall back to just searching for the meal name as a single item.
+                self.desired_product_keywords = [meal_description]
+            else:
+                print("Error, retry")
+
+        # Track which keywords still need to be found (useful for multi-ingredient meals).
+        self.remaining_keywords = set(self.desired_product_keywords)
+
         kitten_tts.speak("Searching for " + ", ".join(self.desired_product_keywords))
         print(f"Searching for {self.desired_product_keywords}")
 
@@ -113,15 +251,19 @@ class GestureYoloOcr:
         overlap = len(a_bigrams & b_bigrams)
         return 2 * overlap / (len(a_bigrams) + len(b_bigrams))
 
-    def get_best_matching_keyword(self, text, desired_product_keywords, threshold=0.7):
+    def get_best_matching_keyword(self, text, desired_product_keywords, threshold=0.55):
+        """Match OCR text against keywords, allowing partial (per-word) matches."""
         best_keyword = None
         best_score = 0
         for keyword in desired_product_keywords:
-            score = self.dice_coefficient_str(keyword, text)
-            print(f"Comparing OCR text '{text}' with keyword '{keyword}' yields score: {score:.4f}")
-            if score > best_score and score >= threshold:
-                best_score = score
-                best_keyword = keyword
+            kw_lower = keyword.lower()
+            candidates = [kw_lower] + kw_lower.split()
+            for cand in candidates:
+                score = self.dice_coefficient_str(cand, text)
+                print(f"Comparing OCR text '{text}' with candidate '{cand}' from keyword '{keyword}' yields score: {score:.4f}")
+                if score > best_score and score >= threshold:
+                    best_score = score
+                    best_keyword = keyword
         print(f"Best match for OCR text '{text}' is '{best_keyword}' with score: {best_score:.4f}")
         return best_keyword, best_score
 
@@ -232,7 +374,9 @@ class GestureYoloOcr:
 
                 matched_ocr = []
                 for box, text, score in ocr_detections:
-                    best_keyword, sim_score = self.get_best_matching_keyword(text, self.desired_product_keywords)
+                    # Prefer to match only against keywords that have not yet been confirmed as found.
+                    search_keywords = list(self.remaining_keywords) if self.remaining_keywords else self.desired_product_keywords
+                    best_keyword, sim_score = self.get_best_matching_keyword(text, search_keywords)
                     if best_keyword is not None:
                         matched_ocr.append((box, text, score, best_keyword))
 
@@ -287,7 +431,8 @@ class GestureYoloOcr:
                     print("tip found")
                     distances = []
                     centers = []
-                    for idx in matched_yolo:
+                    matched_indices = list(matched_yolo.keys())
+                    for idx in matched_indices:
                         yolo_box = store_product_boxes[idx]
                         center = [
                             (yolo_box[0] + yolo_box[2]) / 2,
@@ -298,9 +443,10 @@ class GestureYoloOcr:
                         distances.append(distance)
                     if distances:
                         min_distance = min(distances)
-                        best_idx = distances.index(min_distance)
-                        best_center = centers[best_idx]
-                        best_yolo_box = store_product_boxes[best_idx]
+                        best_idx_in_list = distances.index(min_distance)
+                        best_yolo_idx = matched_indices[best_idx_in_list]
+                        best_center = centers[best_idx_in_list]
+                        best_yolo_box = store_product_boxes[best_yolo_idx]
                         bbox_width = best_yolo_box[2] - best_yolo_box[0]
                         half_width = bbox_width / 2.0
                         effective_distance = min_distance - half_width
@@ -311,6 +457,24 @@ class GestureYoloOcr:
                         center_pt = tuple(map(int, best_center))
                         cv.line(frame, tip, center_pt, (0, 0, 255), 2)
                         cv.putText(frame, f"Effective Distance: {effective_distance:.2f} pixels", (10, 60), cv.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+
+                        # If the fingertip is very close to the product box, consider that ingredient "found".
+                        found_threshold_pixels = 30.0
+                        if effective_distance < found_threshold_pixels:
+                            keyword_for_box = matched_yolo.get(best_yolo_idx)
+                            if keyword_for_box and keyword_for_box in self.remaining_keywords:
+                                print(f"Marking '{keyword_for_box}' as found.")
+                                self.remaining_keywords.remove(keyword_for_box)
+                                try:
+                                    kitten_tts.speak(f"I found {keyword_for_box}.")
+                                except Exception as e:
+                                    print("Error during TTS for found item:", e)
+
+                                if not self.remaining_keywords:
+                                    try:
+                                        kitten_tts.speak("All ingredients have been found.")
+                                    except Exception as e:
+                                        print("Error during TTS for all-found message:", e)
 
                 start_post = time.time()
                 for idx, yolo_box in enumerate(store_product_boxes):

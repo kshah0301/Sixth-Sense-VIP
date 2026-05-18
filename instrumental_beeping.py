@@ -5,8 +5,8 @@ import time
 import threading
 import librosa
 import os
-import parler_tts
-import mimic
+
+
 
 # ================================================
 # InstrumentSampler class: encapsulate loading and playing samples.
@@ -61,15 +61,16 @@ class InstrumentSampler:
             self.preloaded_samples[key] = y
         print("Samples preloaded:", list(self.preloaded_samples.keys()))
 
-    def get_sample_for_direction(self, direction, duration = 0.15):
+    def get_sample_for_direction(self, direction):
         if direction not in self.preloaded_samples:
             raise ValueError(f"Sample for direction {direction} not loaded.")
-        sample = self.preloaded_samples[key]
-        desired_length = int(self.samplerate * duration)
-        if len(sample) < desired_length:
-            sample = np.pad(sample, (0, desired_length - len(sample)), mode='constant')
-        else:
-            sample = sample[:desired_length]
+        sample = self.preloaded_samples[direction]
+        #desired_length = int(self.samplerate * duration)
+        #if len(sample) < desired_length:
+            #sample = np.pad(sample, (0, desired_length - len(sample)), mode='constant')
+        #else:
+           # sample = sample[:desired_length]
+           #duration = 0.15
         return sample
     """
     def get_sample_for_key(self, key, duration=0.15):
@@ -88,8 +89,8 @@ class InstrumentSampler:
         return sample
     """
     #def play_instrument_sample(self, key, amplitude=1.0, pan=0.0,samplerate=44100, duration=0.1):
-    def play_directional_sample(self, direction, amplitude=1.0, pan=0.0, samplerate=44100, duration=0.1):
-        sample = self.get_sample_for_direction(direction, duration=duration)
+    def play_directional_sample(self, direction, amplitude=1.0, pan=0.0, samplerate=44100):
+        sample = self.get_sample_for_direction(direction)
         """
         Play the preloaded instrument sample for the specified key.
           - amplitude: Volume multiplier.
@@ -107,6 +108,32 @@ class InstrumentSampler:
         sd.play(stereo_sample, self.samplerate)
         sd.wait()
         return stereo_sample
+    
+
+    def debug_play_raw_mono(self, direction, duration=0.5):
+        """Debug: play the raw mono sample with no panning / scaling."""
+        sample = self.get_sample_for_direction(direction, duration=duration)
+        sample = sample.astype("float32")
+        print(f"[DEBUG RAW] {direction}: shape={sample.shape}, min={sample.min():.3f}, max={sample.max():.3f}")
+        
+        sd.play(sample, self.samplerate)
+        sd.wait()
+
+    """
+    def debug_play_full(self, direction):
+        Play the entire preloaded sample for a direction, no trimming/panning.
+        if direction not in self.preloaded_samples:
+            raise ValueError(f"No sample loaded for '{direction}'. Have: {list(self.preloaded_samples.keys())}")
+        y = self.preloaded_samples[direction].astype("float32")
+        print(f"[DEBUG FULL] {direction}: len={len(y)}, min={y.min():.3f}, max={y.max():.3f}")
+        import sounddevice as sd
+        sd.play(y, self.samplerate)
+        sd.wait()
+    """
+
+
+        
+        
 
 # ================================================
 # AudioThread Class: uses InstrumentSampler for playback.
@@ -115,7 +142,7 @@ class AudioThread(threading.Thread):
     def __init__(self, samplerate=44100, beep_duration=0.1,
                  min_interval=0.1, max_interval=1.0,
                  min_distance=0, max_distance=150,
-                 min_amplitude=0.2, max_amplitude=1.0, update_timeout=0.5):
+                 min_amplitude=0.2, max_amplitude=1.0, update_timeout=5.0):
         """
         Parameters:
           - samplerate: Playback sample rate.
@@ -138,8 +165,8 @@ class AudioThread(threading.Thread):
         self.max_amplitude = max_amplitude
         self.update_timeout = update_timeout
 
-        # Fix amplitude to constant 13 (or you can change as needed).
-        self.overall_amplitude = 13  
+
+        self.overall_amplitude = 13
         self.pan = 0.0
         self.current_distance = None
         self.last_update = None
@@ -186,9 +213,9 @@ class AudioThread(threading.Thread):
         if abs(dx) > abs(dy):
             # Horizontal movement needed
             if dx > 0:
-                direction = "right"
-            else:
                 direction = "left"
+            else:
+                direction = "right"
         else:
             # Vertical movement needed
             if dy > 0:
@@ -211,12 +238,11 @@ class AudioThread(threading.Thread):
         """使用当前音量和立体声平移，播放指定琴键的采样。"""
     def play_directional_audio(self, direction):
         with self.lock:
-            amp = self.overall_amplitude  # 固定值（13）
+            amp = self.overall_amplitude
             pan = self.pan
-            stereo_wave = self.instrument_sampler.play_directional_sample(direction, amplitude=amp, pan=pan,
-                                                                    samplerate=self.samplerate, duration=self.beep_duration)                                                            
+        stereo_wave = self.instrument_sampler.play_directional_sample(
+            direction, amplitude=amp, pan=pan, samplerate=self.samplerate)
         self.audio_buffer.append(stereo_wave)
-
     #def update_params(self, distance, direction):
     def update_params(self, finger_pos, target_center, distance):
         """
@@ -226,16 +252,17 @@ class AudioThread(threading.Thread):
         立体声平移按照距离线性缩放（距离为 0 时为 0，距离为 max_distance 时为 ±1）。
         Amplitude 固定为 13。
         """
-        new_amplitude = 13  # Fixed value
+        new_amplitude = 0.5  # Fixed value
         # Calculate panning based on horizontal offset
         if finger_pos is not None and target_center is not None:
             dx = target_center[0] - finger_pos[0]
             effective_pan = np.clip(dx / 100.0, -1.0, 1.0)  # Scale horizontal offset
         else:
             effective_pan = 0.0
-
         with self.lock:
             self.current_distance = distance
+            self.finger_pos = finger_pos            # this
+            self.target_center = target_center      #and this added for sake of demo
             self.last_update = time.time()
             self.overall_amplitude = new_amplitude
             self.pan = effective_pan
@@ -273,12 +300,13 @@ class AudioThread(threading.Thread):
             
     def stop(self):
         self.exit_flag = True
-
+    
 # ================================================
 # Main simulation
 # ================================================
 if __name__ == "__main__":
     # 创建音频线程实例
+    """
     audio_thread = AudioThread(beep_duration=0.15, min_interval=0.1, max_interval=1.0,
                                min_distance=0, max_distance=150,
                                min_amplitude=0.2, max_amplitude=1.0, update_timeout=0.5)
@@ -310,3 +338,8 @@ if __name__ == "__main__":
             full_audio = np.concatenate(audio_thread.audio_buffer, axis=0)
             sf.write("recorded_instrument_loop.wav", full_audio, audio_thread.samplerate)
             print("Recorded audio saved to 'recorded_instrument_loop.wav'")
+    """
+
+    # quick_sampler_test.py
+
+

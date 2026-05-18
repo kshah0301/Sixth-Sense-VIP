@@ -1,8 +1,10 @@
-import sounddevice as sd
+import os
+from datetime import datetime
+
 import numpy as np
-import whisper
-import tempfile
 import scipy.io.wavfile as wav
+import sounddevice as sd
+import whisper
 
 # default
 duration = 5  
@@ -15,10 +17,14 @@ def record_audio(duration, sample_rate):
     print("Recording complete.")
     return audio
 
-def save_temp_wav(audio, sample_rate):
-    temp_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-    wav.write(temp_file.name, sample_rate, audio)
-    return temp_file.name
+def save_wav_to_directory(audio, sample_rate, directory="recordings"):
+    os.makedirs(directory, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"recording_{timestamp}.wav"
+    file_path = os.path.join(directory, filename)
+    wav.write(file_path, sample_rate, audio)
+    print(f"Audio saved to: {file_path}")
+    return file_path
 
 def transcribe_with_whisper(audio_path):
     model = whisper.load_model("base")  
@@ -29,8 +35,8 @@ if __name__ == "__main__":
     print("Now Recording")
     audio = record_audio(duration, sample_rate)
     print("Recording finished.")
-    audio_path = save_temp_wav(audio, sample_rate)
-    transcription = transcribe_with_whisper(audio_path)
+    #audio_path = save_wav_to_directory(audio, sample_rate)
+    transcription = transcribe_with_whisper(audio)
     print("Transcription complete.")
     print("\nTranscription:")
     print(transcription)
