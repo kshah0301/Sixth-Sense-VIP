@@ -1,9 +1,11 @@
+import os
+from datetime import datetime
 import threading
-import sounddevice as sd
+
 import numpy as np
-import whisper
-import tempfile
 import scipy.io.wavfile as wav
+import sounddevice as sd
+import whisper
 
 class WhisperTranscriber(threading.Thread):
     def __init__(self, duration=10, sample_rate=16000, model_name="base", **kwargs):
@@ -26,11 +28,14 @@ class WhisperTranscriber(threading.Thread):
         print("Recording complete.")
         return audio
 
-    def save_temp_wav(self, audio):
-        temp_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-        wav.write(temp_file.name, self.sample_rate, audio)
-        print(f"Audio saved temporarily at: {temp_file.name}")
-        return temp_file.name
+    def save_wav_to_directory(self, audio, directory="recordings"):
+        os.makedirs(directory, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"whisper_recording_{timestamp}.wav"
+        file_path = os.path.join(directory, filename)
+        wav.write(file_path, self.sample_rate, audio)
+        print(f"Audio saved to: {file_path}")
+        return file_path
 
     def transcribe_audio(self, audio_path):
         print(f"Loading Whisper model '{self.model_name}'...")
@@ -41,8 +46,8 @@ class WhisperTranscriber(threading.Thread):
 
     def run(self):
         audio = self.record_audio()
-        audio_path = self.save_temp_wav(audio)
-        self.transcription = self.transcribe_audio(audio_path)
+        #audio_path = self.save_wav_to_directory(audio)
+        self.transcription = self.transcribe_audio(audio)
         print("Transcription complete.")
         print("\nTranscription:")
         print(self.transcription)

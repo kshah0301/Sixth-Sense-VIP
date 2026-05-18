@@ -4,7 +4,10 @@
 # deps:
 #   pip install orjson unidecode rapidfuzz numpy requests
 
-import sys, re, argparse, orjson
+import sys, re, os, argparse, orjson
+import time
+import random
+import threading
 from unidecode import unidecode
 from rapidfuzz import fuzz
 
@@ -14,6 +17,32 @@ try:
     HAVE_REQUESTS = True
 except ImportError:
     HAVE_REQUESTS = False
+
+
+_OFF_SESSION = None
+_OFF_LOCK = threading.Lock()
+_OFF_LAST_REQUEST_TS = 0.0
+
+
+def _off_session():
+    global _OFF_SESSION
+    if _OFF_SESSION is None:
+        _OFF_SESSION = requests.Session()
+    return _OFF_SESSION
+
+
+def _off_throttle(min_interval_s: float):
+    """Basic per-process throttle to avoid hammering OpenFoodFacts."""
+    global _OFF_LAST_REQUEST_TS
+    if min_interval_s <= 0:
+        return
+    with _OFF_LOCK:
+        now = time.monotonic()
+        wait_s = (_OFF_LAST_REQUEST_TS + float(min_interval_s)) - now
+        if wait_s > 0:
+            time.sleep(wait_s)
+            now = time.monotonic()
+        _OFF_LAST_REQUEST_TS = now
 
 
 # ---------------- text utils ----------------
@@ -32,7 +61,6 @@ def tokenize(s: str):
 def contains_any(hay: str, needles):
     H = " " + canon(hay) + " "
     return any((" " + n + " ") in H for n in needles)
-
 
 # ---------------- brand similarity & gating ----------------
 BRAND_STOPWORDS = {
@@ -364,21 +392,44 @@ def print_block(title, rows):
     for i, r in enumerate(rows, 1):
         print(f" {i:>2}. {r['brand']} — {r['name']} ({r['qty']}) [code={r['code']}]")
 
-def download_image(row, out_dir="images"):
+def _safe_filename(s: str, max_len: int = 120) -> str:
+    s = canon(s)
+    s = s.replace(" ", "_")
+    s = re.sub(r"[^a-z0-9_\-\.]+", "", s)
+    s = s.strip("._-")
+    if not s:
+        s = "item"
+    return s[:max_len]
+
+
+def download_image(
+    row,
+    out_dir="images",
+    *,
+    min_interval_s: float = 0.5,
+    max_retries: int = 2,
+):
     if not HAVE_REQUESTS:
         print("[image] requests not installed")
         return
 
     code = row.get("code", "").strip()
-    brand = canon(row.get("brand", "")).replace(" ", "_")
-    name  = canon(row.get("name", "")).replace(" ", "_")
+    brand = _safe_filename(row.get("brand", ""))
+    name = _safe_filename(row.get("name", ""))
 
     # fallback if brand or name is missing
     filebase = f"{brand}-{name}" if brand or name else code or "unknown_product"
 
+    headers = {
+        "User-Agent": "Sixth-Sense-VIP/1.0 (ingredient matcher)",
+        "Accept": "image/avif,image/webp,image/*,*/*;q=0.8",
+        "Referer": "https://world.openfoodfacts.org/",
+    }
+
     url = f"https://world.openfoodfacts.org/api/v0/product/{code}.json"
     try:
-        resp = requests.get(url, timeout=5)
+        _off_throttle(min_interval_s)
+        resp = _off_session().get(url, headers=headers, timeout=5)
         if resp.status_code != 200:
             print("[image] OF returned", resp.status_code)
             return
@@ -389,14 +440,31 @@ def download_image(row, out_dir="images"):
             print("[image] no image available")
             return
 
-        imgdata = requests.get(img, timeout=8)
-        if imgdata.status_code != 200:
-            print("[image] img download failed")
+        last_status = None
+        for attempt in range(int(max_retries) + 1):
+            if attempt > 0:
+                time.sleep(min(6.0, (0.8 * (2 ** (attempt - 1)))) + random.uniform(0, 0.25))
+            _off_throttle(min_interval_s)
+            imgdata = _off_session().get(img, headers=headers, timeout=8)
+            last_status = imgdata.status_code
+            if last_status == 200:
+                break
+            if last_status in (403, 429, 500, 502, 503, 504):
+                retry_after = imgdata.headers.get("Retry-After")
+                if retry_after:
+                    try:
+                        time.sleep(min(15.0, float(retry_after)))
+                    except Exception:
+                        pass
+                continue
+            break
+
+        if last_status != 200:
+            print("[image] img download failed:", last_status)
             return
 
-        import os
         os.makedirs(out_dir, exist_ok=True)
-        out_path = f"{out_dir}/{filebase}.jpg"
+        out_path = os.path.join(out_dir, f"{filebase}.jpg")
 
         with open(out_path, "wb") as f:
             f.write(imgdata.content)
@@ -405,6 +473,243 @@ def download_image(row, out_dir="images"):
 
     except Exception as e:
         print("[image] error:", e)
+
+
+# ---------------- recipe/free-form matching ----------------
+_QTY_SUFFIX_RE = re.compile(
+    r"(?P<qty>\b\d[\d\s\.\/]*\s*(?:"
+    r"fl\s*oz|floz|oz|ounce|ounces|lb|lbs|pound|pounds|g|gram|grams|kg|kilogram|kilograms|"
+    r"ml|milliliter|milliliters|l|liter|liters|"
+    r"ct|count|pk|pack|packs|x"
+    r")\b.*)$",
+    re.IGNORECASE,
+)
+
+
+def extract_qty_suffix(label: str):
+    """
+    Heuristic: extract a trailing quantity substring from a free-form product label.
+    Returns (name_without_qty, qty_str_or_empty).
+    """
+    if not label:
+        return "", ""
+    s = label.strip()
+    m = _QTY_SUFFIX_RE.search(s)
+    if not m:
+        return s, ""
+    qty = (m.group("qty") or "").strip()
+    name = s[: m.start()].strip(" ,-/\t")
+    return name.strip(), qty
+
+
+def build_brand_token_index(rows):
+    """
+    Build a token -> set(brand_variant) index so we can cheaply guess brands
+    from a free-form label like "Kerrygold salted butter 8 oz".
+    """
+    idx = {}
+    for r in rows:
+        raw = r.get("brand", "") or ""
+        parts = _split_brand_variants(raw) or [canon(raw)]
+        for part in parts:
+            part = canon(part)
+            if not part:
+                continue
+            toks = brand_strong_tokens(part)
+            if not toks:
+                continue
+            for t in toks:
+                idx.setdefault(t, set()).add(part)
+    return idx
+
+
+def guess_brand_from_label(label: str, brand_token_index):
+    """
+    Guess the canonical brand variant contained in label, preferring the
+    longest brand variant that appears as a whole-word substring.
+    Returns "" if no confident brand hit is found.
+    """
+    if not label or not brand_token_index:
+        return ""
+    H = " " + canon(label) + " "
+    tokens = brand_strong_tokens(label)
+    if not tokens:
+        return ""
+
+    candidates = set()
+    for t in tokens:
+        candidates |= brand_token_index.get(t, set())
+
+    hits = []
+    for cand in candidates:
+        needle = " " + cand + " "
+        if needle in H:
+            hits.append(cand)
+    if not hits:
+        return ""
+    hits.sort(key=len, reverse=True)
+    return hits[0]
+
+
+def strip_brand_from_label(label: str, brand_canon: str):
+    if not label or not brand_canon:
+        return label or ""
+    s = canon(label)
+    b = canon(brand_canon)
+    if not b:
+        return label
+    # remove the first whole-word occurrence of the brand variant
+    s2 = re.sub(rf"(?<!\w){re.escape(b)}(?!\w)", " ", s, count=1)
+    return re.sub(r"\s+", " ", s2).strip()
+
+
+def match_freeform_item(rows, label: str, brand_token_index=None, max_candidates: int = 30):
+    """
+    Match a free-form label (single string) against a catalog loaded via load_catalog().
+    Returns a dict with:
+      - status: "single", "multiple", "none"
+      - query: original label
+      - brand_guess, name_guess, qty_guess
+      - best: best row or None
+      - candidates: up to max_candidates rows
+    """
+    brand_token_index = brand_token_index or {}
+    name_wo_qty, qty = extract_qty_suffix(label)
+    brand_guess = guess_brand_from_label(name_wo_qty, brand_token_index)
+    name_guess = strip_brand_from_label(name_wo_qty, brand_guess) if brand_guess else name_wo_qty
+    name_guess = name_guess.strip()
+
+    working = rows
+    if brand_guess:
+        working = filter_brand(working, brand_guess)
+        # If we over-filtered due to a bad brand guess, fall back to no brand gate.
+        if not working:
+            working = rows
+            brand_guess = ""
+            name_guess = name_wo_qty
+
+    working2 = filter_name_strict(working, name_guess)
+    if not working2:
+        return {
+            "status": "none",
+            "query": label,
+            "brand_guess": brand_guess,
+            "name_guess": name_guess,
+            "qty_guess": qty,
+            "best": None,
+            "candidates": [],
+        }
+    working = working2
+
+    if qty:
+        soft = [r for r in working if qty_close(qty, r.get("qty", ""))]
+        if soft:
+            working = soft
+
+    # rank & choose best
+    uq = canon(name_guess)
+    scored = []
+    for r in working:
+        ns = fuzz.token_set_ratio(uq, canon(r.get("name", ""))) / 100.0 if uq else 0.0
+        bs = brand_similarity(brand_guess, r.get("brand", "")) if brand_guess else 0.5
+        qs = qty_numeric_similarity(qty, r.get("qty", "")) if qty else None
+        qscore = qs if qs is not None else 0.0
+        score = (0.70 * ns) + (0.20 * bs) + (0.10 * qscore)
+        scored.append((score, r))
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    candidates = [r for _, r in scored[:max_candidates]]
+    best = candidates[0] if candidates else None
+    status = "single" if len(candidates) == 1 else "multiple"
+    return {
+        "status": status,
+        "query": label,
+        "brand_guess": brand_guess,
+        "name_guess": name_guess,
+        "qty_guess": qty,
+        "best": best,
+        "candidates": candidates,
+    }
+
+
+# ---------------- OpenFoodFacts search API (top-N suggestions) ----------------
+def off_search_top_products(
+    query_text: str,
+    limit: int = 5,
+    debug: bool = False,
+    *,
+    min_interval_s: float = 0.5,
+    max_retries: int = 3,
+    timeout_s: float = 10.0,
+):
+    """
+    Query OpenFoodFacts search endpoint for the top products matching query_text.
+    Returns a list of rows shaped like load_catalog() output: {code,name,brand,qty,keywords}.
+    """
+    if not HAVE_REQUESTS:
+        if debug:
+            print("[OFF] requests not installed (pip install requests)")
+        return []
+    q = (query_text or "").strip()
+    if not q:
+        return []
+
+    url = "https://world.openfoodfacts.org/cgi/search.pl"
+    params = {
+        "search_simple": 1,
+        "action": "process",
+        "json": 1,
+        "page_size": int(limit),
+        "search_terms": q,
+    }
+    headers = {"User-Agent": "Sixth-Sense-VIP/1.0 (ingredient matcher)"}
+    retryable = {429, 500, 502, 503, 504}
+    last_err = None
+    for attempt in range(int(max_retries) + 1):
+        if attempt > 0:
+            # Exponential backoff + jitter (cap to keep UI responsive).
+            backoff = min(8.0, (0.6 * (2 ** (attempt - 1)))) + random.uniform(0, 0.25)
+            time.sleep(backoff)
+        _off_throttle(min_interval_s)
+        try:
+            r = _off_session().get(url, params=params, headers=headers, timeout=float(timeout_s))
+            if r.status_code in retryable:
+                retry_after = r.headers.get("Retry-After")
+                if retry_after:
+                    try:
+                        time.sleep(min(15.0, float(retry_after)))
+                    except Exception:
+                        pass
+                last_err = RuntimeError(f"HTTP {r.status_code} {r.reason}")
+                continue
+            r.raise_for_status()
+            products = r.json().get("products", []) or []
+            last_err = None
+            break
+        except Exception as e:
+            last_err = e
+            continue
+
+    if last_err is not None:
+        if debug:
+            print(f"[OFF] search failed for {q!r}: {last_err}")
+        return []
+
+    out = []
+    for p in products:
+        code = (p.get("code") or "").strip()
+        if not code:
+            continue
+        out.append(
+            {
+                "code": code,
+                "name": p.get("product_name") or "",
+                "brand": p.get("brands") or "",
+                "qty": p.get("quantity") or "",
+                "keywords": "",
+            }
+        )
+    return out
 
 
 

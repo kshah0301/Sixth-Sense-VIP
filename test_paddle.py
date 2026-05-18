@@ -16,7 +16,7 @@ import sounddevice as sd
 import soundfile as sf
 from instrumental_beeping import AudioThread
 from test_stt import WhisperTranscriber
-from mimic import text_to_speech_offline
+from sound4567 import text_to_speech_offline
 
 class GestureYoloOcr:
     def __init__(self):

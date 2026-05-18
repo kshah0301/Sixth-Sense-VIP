@@ -1,0 +1,219 @@
+<?xml version="1.0" encoding="utf-8"?>
+<annotations>
+  <version>1.1</version>
+  <meta>
+    <task>
+      <id>2048570</id>
+      <name>vending machine 2</name>
+      <size>9</size>
+      <mode>annotation</mode>
+      <overlap>0</overlap>
+      <bugtracker></bugtracker>
+      <created>2026-02-24 16:44:54.578026+00:00</created>
+      <updated>2026-02-24 16:48:51.747391+00:00</updated>
+      <subset>default</subset>
+      <start_frame>0</start_frame>
+      <stop_frame>8</stop_frame>
+      <frame_filter></frame_filter>
+      <segments>
+        <segment>
+          <id>3669199</id>
+          <start>0</start>
+          <stop>8</stop>
+          <url>https://app.cvat.ai/api/tasks/2048570/dataset/export/api/jobs/3669580</url>
+        </segment>
+      </segments>
+      <owner>
+        <username>evelynn</username>
+        <email>em4829@nyu.edu</email>
+      </owner>
+      <assignee></assignee>
+      <labels>
+        <label>
+          <name>0  wrist</name>
+          <color>#e5c37c</color>
+          <type>any</type>
+          <attributes>
+          </attributes>
+        </label>
+        <label>
+          <name>1  thumb_cmc</name>
+          <color>#68b7a4</color>
+          <type>any</type>
+          <attributes>
+          </attributes>
+        </label>
+        <label>
+          <name>2  thumb_mcp</name>
+          <color>#7e3ed0</color>
+          <type>any</type>
+          <attributes>
+          </attributes>
+        </label>
+        <label>
+          <name>3  thumb_ip</name>
+          <color>#0b0ca4</color>
+          <type>any</type>
+          <attributes>
+          </attributes>
+        </label>
+        <label>
+          <name>4  thumb_tip</name>
+          <color>#47dfed</color>
+          <type>any</type>
+          <attributes>
+          </attributes>
+        </label>
+        <label>
+          <name>5  index_mcp</name>
+          <color>#f359d1</color>
+          <type>any</type>
+          <attributes>
+          </attributes>
+        </label>
+        <label>
+          <name>6  index_pip</name>
+          <color>#23c460</color>
+          <type>any</type>
+          <attributes>
+          </attributes>
+        </label>
+        <label>
+          <name>7  index_dip</name>
+          <color>#ab74ee</color>
+          <type>any</type>
+          <attributes>
+          </attributes>
+        </label>
+        <label>
+          <name>8  index_tip</name>
+          <color>#2d13f2</color>
+          <type>any</type>
+          <attributes>
+          </attributes>
+        </label>
+        <label>
+          <name>9  middle_mcp</name>
+          <color>#aba8cd</color>
+          <type>any</type>
+          <attributes>
+          </attributes>
+        </label>
+        <label>
+          <name>10 middle_pip</name>
+          <color>#a96edd</color>
+          <type>any</type>
+          <attributes>
+          </attributes>
+        </label>
+        <label>
+          <name>11 middle_dip</name>
+          <color>#386bd2</color>
+          <type>any</type>
+          <attributes>
+          </attributes>
+        </label>
+        <label>
+          <name>12 middle_tip</name>
+          <color>#180eb3</color>
+          <type>any</type>
+          <attributes>
+          </attributes>
+        </label>
+        <label>
+          <name>13 ring_mcp</name>
+          <color>#387344</color>
+          <type>any</type>
+          <attributes>
+          </attributes>
+        </label>
+        <label>
+          <name>14 ring_pip</name>
+          <color>#ca2a68</color>
+          <type>any</type>
+          <attributes>
+          </attributes>
+        </label>
+        <label>
+          <name>15 ring_dip</name>
+          <color>#c34055</color>
+          <type>any</type>
+          <attributes>
+          </attributes>
+        </label>
+        <label>
+          <name>16 ring_tip</name>
+          <color>#061bbb</color>
+          <type>any</type>
+          <attributes>
+          </attributes>
+        </label>
+        <label>
+          <name>17 pinky_mcp</name>
+          <color>#513e06</color>
+          <type>any</type>
+          <attributes>
+          </attributes>
+        </label>
+        <label>
+          <name>18 pinky_pip</name>
+          <color>#69cfc8</color>
+          <type>any</type>
+          <attributes>
+          </attributes>
+        </label>
+        <label>
+          <name>19 pinky_dip</name>
+          <color>#34d543</color>
+          <type>any</type>
+          <attributes>
+          </attributes>
+        </label>
+        <label>
+          <name>20 pinky_tip</name>
+          <color>#91ffd4</color>
+          <type>any</type>
+          <attributes>
+          </attributes>
+        </label>
+      </labels>
+    </task>
+    <dumped>2026-02-24 16:49:41.871327+00:00</dumped>
+  </meta>
+  <image id="0" name="Pasted Graphic 1.png" width="1078" height="1298">
+    <points label="8  index_tip" source="manual" occluded="0" points="246.42,530.48" z_order="0">
+    </points>
+  </image>
+  <image id="1" name="Pasted Graphic 2.png" width="1078" height="1298">
+    <points label="8  index_tip" source="manual" occluded="0" points="562.46,492.86" z_order="0">
+    </points>
+  </image>
+  <image id="2" name="Pasted Graphic 3.png" width="1078" height="1298">
+    <points label="8  index_tip" source="manual" occluded="0" points="810.77,522.96" z_order="0">
+    </points>
+  </image>
+  <image id="3" name="Pasted Graphic 4.png" width="1078" height="1298">
+    <points label="8  index_tip" source="manual" occluded="0" points="859.68,746.81" z_order="0">
+    </points>
+  </image>
+  <image id="4" name="Pasted Graphic 5.png" width="1078" height="1298">
+    <points label="8  index_tip" source="manual" occluded="0" points="543.65,694.14" z_order="0">
+    </points>
+  </image>
+  <image id="5" name="Pasted Graphic 6.png" width="1078" height="1298">
+    <points label="8  index_tip" source="manual" occluded="0" points="276.52,692.26" z_order="0">
+    </points>
+  </image>
+  <image id="6" name="Pasted Graphic 7.png" width="1078" height="1298">
+    <points label="8  index_tip" source="manual" occluded="0" points="253.95,886.02" z_order="0">
+    </points>
+  </image>
+  <image id="7" name="Pasted Graphic 8.png" width="1078" height="1298">
+    <points label="8  index_tip" source="manual" occluded="0" points="504.14,844.63" z_order="0">
+    </points>
+  </image>
+  <image id="8" name="Pasted Graphic.png" width="1078" height="1298">
+    <points label="8  index_tip" source="manual" occluded="0" points="767.51,280.29" z_order="0">
+    </points>
+  </image>
+</annotations>

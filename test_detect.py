@@ -16,13 +16,14 @@ import sounddevice as sd
 import soundfile as sf
 from instrumental_beeping import AudioThread
 from test_stt import WhisperTranscriber
-from mimic import text_to_speech_offline
-from directional_audio_generator import generate_directional_audio_files
+from directional_audio_generator import check_directional_audio_files
+import kitten_tts 
+
 
 class GestureYoloOcr:
     def __init__(self):
-        # Generate directional audio files if they don't exist
-        generate_directional_audio_files()
+        # Check for directional audio files
+        check_directional_audio_files()
         
         # Mediapipe gesture setup
         self.latest_gesture_result = None
@@ -38,14 +39,16 @@ class GestureYoloOcr:
         # Display option
         self.display_green_boxes = False
 
-        text_to_speech_offline("Name the item you are looking for?")
+        kitten_tts.speak("Name the item you are looking for?")
         self.transcriber = WhisperTranscriber(duration=2, sample_rate=16000, model_name="base")
         self.transcriber.start()
         self.transcriber.join()
-        transcription_result = self.transcriber.transcription
-        #self.desired_product_keywords = transcription_result.split() 
-        self.desired_product_keywords =  ['RiceKrispies']
-        text_to_speech_offline("Searching for " + ", ".join(self.desired_product_keywords))
+        transcription_result = (self.transcriber.transcription or "").strip()
+        if transcription_result:
+            self.desired_product_keywords = [transcription_result]
+        else:
+            self.desired_product_keywords = ["Poland Spring"]
+        kitten_tts.speak("Searching for " + ", ".join(self.desired_product_keywords))
         print(f"Searching for {self.desired_product_keywords}")
 
         # Color mapping
@@ -112,15 +115,19 @@ class GestureYoloOcr:
         overlap = len(a_bigrams & b_bigrams)
         return 2 * overlap / (len(a_bigrams) + len(b_bigrams))
 
-    def get_best_matching_keyword(self, text, desired_product_keywords, threshold=0.7):
+    def get_best_matching_keyword(self, text, desired_product_keywords, threshold=0.55):
+        """Match OCR text against keywords, allowing partial (per-word) matches."""
         best_keyword = None
         best_score = 0
         for keyword in desired_product_keywords:
-            score = self.dice_coefficient_str(keyword, text)
-            print(f"Comparing OCR text '{text}' with keyword '{keyword}' yields score: {score:.4f}")
-            if score > best_score and score >= threshold:
-                best_score = score
-                best_keyword = keyword
+            kw_lower = keyword.lower()
+            candidates = [kw_lower] + kw_lower.split()
+            for cand in candidates:
+                score = self.dice_coefficient_str(cand, text)
+                print(f"Comparing OCR text '{text}' with candidate '{cand}' from keyword '{keyword}' yields score: {score:.4f}")
+                if score > best_score and score >= threshold:
+                    best_score = score
+                    best_keyword = keyword
         print(f"Best match for OCR text '{text}' is '{best_keyword}' with score: {best_score:.4f}")
         return best_keyword, best_score
 
